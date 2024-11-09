@@ -10,6 +10,7 @@ import com.hmdp.entity.ShopType;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RedisData;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,29 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private CacheClient cacheClient;
+
+    /**
+     * 基于cache aside策略的更新商户详情信息
+     * 开启@Transactional注解,保证Redis与数据库的一致性,出现错误就回滚
+     * @param shop
+     * @return
+     */
+    @Transactional // 保证
+    public Result update(Shop shop) {
+        Long id = shop.getId();
+        if (id == null) {
+            return Result.fail("店铺id不能为空");
+        }
+        // 1. 更新数据库
+        updateById(shop);
+        // 2. 删除缓存
+        stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
+
+        return Result.ok();
+    }
+
     /**
      * 根据id查询商铺信息(Redis缓存)
      * @param id
@@ -47,27 +71,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      */
     public Result queryById(Long id) {
         // 方案1 - 防止缓存穿透的商户详情查询 (适用于当用户老是查询不存在的商户时)
-        // Shop shop = queryWithPassThrough(id);
+        // Shop shop = queryWithPassThrough(id); // 旧调用方式(调用本地的实现)
+
+        // Shop shop = cacheClient // 调用工具包的方式
+        //        .queryWithPassThrough(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
         // 方案2 - 基于互斥锁：防止缓存击穿的商户详情查询 (针对于热点商户)
-         Shop shop = queryWithMutex(id);
+        // Shop shop = queryWithMutex(id);
 
         // 方案3 - 基于逻辑过期：防止缓存击穿的商户详情查询 (针对于热点商户)
         // Shop shop = queryWithLogicalExpire(id);
+        log.info("query id: {}", id);
+        Shop shop = cacheClient // 调用工具包的方式
+                .queryWithLogicalExpire(CACHE_SHOP_KEY, id, LOCK_SHOP_KEY, Shop.class, this::getById, 10L, TimeUnit.SECONDS);
 
         if (shop == null) {
             return Result.fail("店铺不存在");
         }
         return Result.ok(shop);
-    }
-
-    private boolean tryLock(String key) {
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
-        return BooleanUtil.isTrue(flag);
-    }
-
-    private void unLock(String key) {
-        stringRedisTemplate.delete(key);
     }
 
     /**
@@ -76,6 +97,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @param id
      * @param expireSeconds
      */
+    /*
     public void saveHotShopToRedis(Long id, Long expireSeconds) {
         // 1. 查询店铺数据
         Shop shop = getById(id);
@@ -87,17 +109,22 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         // 3. 写入Redis
         stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(redisData));
     }
+    */
 
     /**
      * 线程池的个数取决于热点key个数，这个要具体问题具体分析
      */
+    /*
     private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
+    */
+
 
     /**
      * 基于逻辑过期的防止缓存击穿策略
      * @param id
      * @return
      */
+    /*
     public Shop queryWithLogicalExpire(Long id) {
         String key = CACHE_SHOP_KEY + id;
         // 1. 查询 Redis 缓存
@@ -143,32 +170,12 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         // 5.3 获取失败,直接返回逻辑过期的热点key数据
         return shop;
     }
-
-
-
-    /**
-     * 基于cache aside策略的更新商户详情信息
-     * 开启@Transactional注解,保证Redis与数据库的一致性,出现错误就回滚
-     * @param shop
-     * @return
-     */
-    @Transactional // 保证
-    public Result update(Shop shop) {
-        Long id = shop.getId();
-        if (id == null) {
-            return Result.fail("店铺id不能为空");
-        }
-        // 1. 更新数据库
-        updateById(shop);
-        // 2. 删除缓存
-        stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
-
-        return Result.ok();
-    }
+    */
 
     /**
      * 基于互斥锁解决缓存击穿的商户详情查询
      * 适用情况: 被请求的资源是热点key
+     * 还没有提取为工具包
      * @param id
      * @return
      */
@@ -234,9 +241,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     /**
      * 封装基于缓存空对象的防止缓存穿透的商户详情查询方法
      * 适用情况: 被请求的资源总是不存在
-     * @param id
-     * @return
      */
+    /*
     public Shop queryWithPassThrough(Long id) {
         String key = CACHE_SHOP_KEY + id;
         // 1. 查询 Redis 缓存
@@ -271,5 +277,15 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 6. 返回
         return shop;
+    }
+     */
+
+    private boolean tryLock(String key) {
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+        return BooleanUtil.isTrue(flag);
+    }
+
+    private void unLock(String key) {
+        stringRedisTemplate.delete(key);
     }
 }
