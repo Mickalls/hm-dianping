@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
@@ -10,11 +11,16 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisConstants;
+import com.hmdp.utils.RedisData;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static com.hmdp.utils.RedisConstants.*;
@@ -28,6 +34,7 @@ import static com.hmdp.utils.RedisConstants.*;
  * @since 2021-12-22
  */
 @Service
+@Slf4j
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
 
     @Resource
@@ -39,11 +46,15 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @return
      */
     public Result queryById(Long id) {
-        // 防止缓存穿透的商户详情查询 (适用于当用户老是查询不存在的商户时)
+        // 方案1 - 防止缓存穿透的商户详情查询 (适用于当用户老是查询不存在的商户时)
         // Shop shop = queryWithPassThrough(id);
 
-        // 防止缓存击穿的商户详情查询 (针对于热点商户)
-        Shop shop = queryWithMutex(id);
+        // 方案2 - 基于互斥锁：防止缓存击穿的商户详情查询 (针对于热点商户)
+         Shop shop = queryWithMutex(id);
+
+        // 方案3 - 基于逻辑过期：防止缓存击穿的商户详情查询 (针对于热点商户)
+        // Shop shop = queryWithLogicalExpire(id);
+
         if (shop == null) {
             return Result.fail("店铺不存在");
         }
@@ -58,6 +69,82 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private void unLock(String key) {
         stringRedisTemplate.delete(key);
     }
+
+    /**
+     * 既可以提前预热、也可以缓存重建
+     * 将热key(流量大的店铺)的value(店铺详情信息)存储到Redis中
+     * @param id
+     * @param expireSeconds
+     */
+    public void saveHotShopToRedis(Long id, Long expireSeconds) {
+        // 1. 查询店铺数据
+        Shop shop = getById(id);
+        // 2. 封装成逻辑过期数据
+        RedisData redisData = new RedisData();
+        redisData.setData(shop);
+        redisData.setExpireTime(LocalDateTime.now().plusSeconds(expireSeconds));
+
+        // 3. 写入Redis
+        stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(redisData));
+    }
+
+    /**
+     * 线程池的个数取决于热点key个数，这个要具体问题具体分析
+     */
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
+
+    /**
+     * 基于逻辑过期的防止缓存击穿策略
+     * @param id
+     * @return
+     */
+    public Shop queryWithLogicalExpire(Long id) {
+        String key = CACHE_SHOP_KEY + id;
+        // 1. 查询 Redis 缓存
+        String shopJson = stringRedisTemplate.opsForValue().get(key);
+
+        // 2. 缓存未命中直接返回空
+        if (StrUtil.isBlank(shopJson)) {
+            return null;
+        }
+
+        // 3. 若命中,判断是否逻辑过期
+        RedisData redisData = JSONUtil.toBean(shopJson, RedisData.class);
+        JSONObject shopJSONObject = (JSONObject) redisData.getData(); // 转为的是JSONObject
+        Shop shop = JSONUtil.toBean(shopJSONObject, Shop.class);
+        LocalDateTime expireTime = redisData.getExpireTime();
+
+        // 4. 未过期直接返回
+        if (expireTime.isAfter(LocalDateTime.now())) {
+            return shop;
+        }
+
+        // 5. 已过期,进行缓存重建
+        // 5.1 尝试获取互斥锁,注意只尝试一次
+        String lockKey = LOCK_SHOP_KEY + id;
+        boolean gotLock = tryLock(lockKey);
+        if (gotLock) {
+            // 5.2 获取成功,开启独立线程查数据库后返回逻辑过期的热点key数据
+            // 实现缓存重建
+            // 这里采用线程池去做
+            CACHE_REBUILD_EXECUTOR.submit(() -> {
+                try {
+                    // 应该设置hotkey的逻辑过期时间为30分钟
+                    this.saveHotShopToRedis(id, 20L);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                } finally {
+                    // 释放锁
+                    unLock(lockKey);
+                }
+            });
+        }
+
+        // 5.3 获取失败,直接返回逻辑过期的热点key数据
+        return shop;
+    }
+
+
 
     /**
      * 基于cache aside策略的更新商户详情信息
@@ -146,7 +233,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     /**
      * 封装基于缓存空对象的防止缓存穿透的商户详情查询方法
-     * 适用情况: 被请求的资源总是可能不存在
+     * 适用情况: 被请求的资源总是不存在
      * @param id
      * @return
      */
