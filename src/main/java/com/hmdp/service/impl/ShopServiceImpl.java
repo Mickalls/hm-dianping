@@ -81,7 +81,6 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 方案3 - 基于逻辑过期：防止缓存击穿的商户详情查询 (针对于热点商户)
         // Shop shop = queryWithLogicalExpire(id);
-        log.info("query id: {}", id);
         Shop shop = cacheClient // 调用工具包的方式
                 .queryWithLogicalExpire(CACHE_SHOP_KEY, id, LOCK_SHOP_KEY, Shop.class, this::getById, 10L, TimeUnit.SECONDS);
 

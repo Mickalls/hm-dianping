@@ -12,6 +12,7 @@ import javax.servlet.http.HttpServletResponse;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+@Slf4j
 public class RefreshTokenInterceptor implements HandlerInterceptor {
 
     private StringRedisTemplate stringRedisTemplate;
@@ -24,6 +25,7 @@ public class RefreshTokenInterceptor implements HandlerInterceptor {
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         // 1. 从请求头中获取token
         String token = request.getHeader("Authorization");
+        log.info("用户token: {}", token);
         if (StrUtil.isBlank(token)) {
             // 不拦截 直接放行,不然用户无法访问任何不需要登陆的服务,比如用户连登陆都不能登陆了(拦截不让访问登陆服务)
             return true;
