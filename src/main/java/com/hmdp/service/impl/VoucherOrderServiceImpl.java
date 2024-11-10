@@ -10,6 +10,8 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
 import com.hmdp.utils.lock.SimpleRedisLock;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -37,6 +39,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RedisIdWorker redisIdWorker;
+
+    @Resource
+    private RedissonClient redissonClient;
 
     /**
      * 抢购秒杀优化券
@@ -69,9 +74,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         Long userId = UserHolder.getUser().getId();
         // 尝试获取分布式锁,获取成功就继续创建订单,否则就返回errorMsg,不进行重试,因为此处的并发逻辑是同一用户的并发请求,是非法的
-        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+//        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId); // [基于redisson]
         // 尝试获取锁
-        boolean gotLock = lock.tryLock(1200); // 测试的时候时间先暂时设置的久一点
+        boolean gotLock = lock.tryLock(); // 默认不重试, 超时时间30秒 [基于redisson]
+//        boolean gotLock = lock.tryLock(1200); // 测试的时候时间先暂时设置的久一点
         if (!gotLock) {
             // 获取锁失败直接返回,不重试,同一用户的并发请求是非法的
             return Result.fail("不允许重复下单");
