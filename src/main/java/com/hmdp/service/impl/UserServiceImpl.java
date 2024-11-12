@@ -14,6 +14,7 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.context.annotation.Bean;
@@ -25,6 +26,9 @@ import javax.servlet.http.HttpSession;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_USER_KEY;
 
 /**
  * <p>
@@ -60,7 +64,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         String code = RandomUtil.randomNumbers(6);
 
         // 4. 保存验证码到Redis，设置验证码两分钟有效期
-        stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY + phone, code, RedisConstants.LOGIN_CODE_TTL, TimeUnit.MINUTES);
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code, RedisConstants.LOGIN_CODE_TTL, TimeUnit.MINUTES);
 
         // 5. 发送验证码
         log.info("模拟短信发送,验证码为: {}", code);
@@ -83,7 +87,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.fail("手机号格式错误");
         }
         // 从 Redis 中获取验证码
-        String cacheCode = stringRedisTemplate.opsForValue().get(RedisConstants.LOGIN_CODE_KEY + phone);
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
 
         String code = loginForm.getCode();
         if (cacheCode == null || !cacheCode.equals(code)) {
@@ -111,13 +115,32 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
                 CopyOptions.create().setIgnoreNullValue(true).setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
 
         // 5.3 存储到Redis中
-        String tokenKey = RedisConstants.LOGIN_USER_KEY + token;
+        String tokenKey = LOGIN_USER_KEY + token;
         stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);
         // 5.4 设置过期时间30分钟
         stringRedisTemplate.expire(tokenKey, RedisConstants.LOGIN_USER_TTL, TimeUnit.MINUTES);
 
         // 6. 返回ok
         return Result.ok(token);
+    }
+
+    /**
+     * 退出登录功能
+     * @param token 用户登陆时生成并保存到Redis中的校验码
+     * @return
+     */
+    public Result logout(String token) {
+        // 1. 获取用户id
+        UserDTO userDTO = UserHolder.getUser();
+
+        // 2. 拼接出tokenKey 并删除Redis中响应记录
+        String tokenKey = LOGIN_USER_KEY + token;
+        stringRedisTemplate.delete(tokenKey);
+
+        // 3. 删除 UserHolder 中的用户记录
+        UserHolder.removeUser();
+
+        return Result.ok();
     }
 
     /**

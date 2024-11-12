@@ -32,4 +32,11 @@ public interface IUserService extends IService<User> {
      * @return
      */
     Result login(LoginFormDTO loginForm, HttpSession session);
+
+    /**
+     * 退出登陆功能
+     * @param token 用户登陆时生成并保存到Redis中的校验码
+     * @return
+     */
+    Result logout(String token);
 }
