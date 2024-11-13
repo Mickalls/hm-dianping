@@ -39,4 +39,16 @@ public interface IUserService extends IService<User> {
      * @return
      */
     Result logout(String token);
+
+    /**
+     * 签到功能
+     * @return
+     */
+    Result sign();
+
+    /**
+     * 统计本月连续签到天数
+     * @return
+     */
+    Result signCount();
 }

@@ -18,17 +18,20 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.context.annotation.Bean;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
-import static com.hmdp.utils.RedisConstants.LOGIN_USER_KEY;
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -141,6 +144,71 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         UserHolder.removeUser();
 
         return Result.ok();
+    }
+
+    /**
+     * 签到功能
+     * @return
+     */
+    public Result sign() {
+        // 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+
+        // 获取当前日期
+        String keySuffix = LocalDateTime.now().format(DateTimeFormatter.ofPattern(":yyyyMM"));
+
+        // 获取key
+        String key = USER_SIGN_KEY + userId + keySuffix;
+
+        // 获取当前天数 1~31, 对应BitMap的索引为 0~30
+        int dayOfMonth = LocalDateTime.now().getDayOfMonth();
+
+        // 操作Redis,对String用SetBit操作(Redis的BitMap基于String实现)
+        stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
+
+        return Result.ok();
+    }
+
+    /**
+     * 统计本月连续签到天数
+     * @return
+     */
+    public Result signCount() {
+        // 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+
+        // 获取当前日期
+        String keySuffix = LocalDateTime.now().format(DateTimeFormatter.ofPattern(":yyyyMM"));
+
+        // 获取key
+        String key = USER_SIGN_KEY + userId + keySuffix;
+
+        // 获取当前天数 1~31, 对应BitMap的索引为 0~30
+        int dayOfMonth = LocalDateTime.now().getDayOfMonth();
+
+        // bitfield 查询: bitfield key [get u[dayOfMonth] 0] ; 其中 get 是一个子命令
+        List<Long> results = stringRedisTemplate.opsForValue().bitField(
+                key, BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth)).valueAt(0)
+        );
+        if (results == null || results.isEmpty()) {
+            return Result.ok(0);
+        }
+        Long value = results.get(0);
+        if (value == null || value == 0) {
+            return Result.ok(0);
+        }
+        int count = 0;
+        while (true) {
+            if ((value & 1) == 0) {
+                break;
+            } else {
+                count++;
+            }
+            value = value >>> 1;
+        }
+
+        return Result.ok(count);
     }
 
     /**
